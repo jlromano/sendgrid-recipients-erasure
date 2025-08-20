@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+config.py
+
+# API credentials and secrets
+*.key
+*.secret
+*credentials*
+
+# Test and output files
+batch_job_*.json
+batch_results*.csv
+verifymyage_callbacks.json
+callback_*.json
+verification_results_*.json
+report_*.csv
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Ngrok
+ngrok.yml
+ngrok.log
+
+# Personal data
+emails_to_verify.csv
+*personal*.csv
+*private*.csv
+
+# Keep example files
+!emails_example.csv
+!.env.example
