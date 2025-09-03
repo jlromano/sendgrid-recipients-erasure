@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import os
 import sys
+import csv
 import json
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from python_http_client.exceptions import HTTPError
 
 load_dotenv()
@@ -16,16 +18,38 @@ class SendGridBatchEraser:
         self.api_key_2 = os.getenv("SENDGRID_API_KEY_2", "")
         
     def read_emails_from_file(self, filepath: str) -> List[str]:
-        """Read and clean email addresses from file."""
+        """Read and clean email addresses from CSV or text file."""
         emails = []
         try:
-            with open(filepath, 'r') as f:
-                for line in f:
-                    email = line.strip()
-                    if email and '@' in email:
-                        emails.append(email)
+            # Check if it's a CSV file
+            if filepath.endswith('.csv'):
+                with open(filepath, 'r', newline='', encoding='utf-8') as f:
+                    # Try to detect if it has headers
+                    sample = f.read(1024)
+                    f.seek(0)
+                    has_header = csv.Sniffer().has_header(sample) if sample else False
+                    
+                    reader = csv.reader(f)
+                    if has_header:
+                        next(reader)  # Skip header
+                    
+                    for row in reader:
+                        if row:  # Check if row is not empty
+                            email = row[0].strip()  # Get first column
+                            if email and '@' in email:
+                                emails.append(email)
+            else:
+                # Plain text file
+                with open(filepath, 'r') as f:
+                    for line in f:
+                        email = line.strip()
+                        if email and '@' in email:
+                            emails.append(email)
         except FileNotFoundError:
             print(f"Error: File {filepath} not found")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error reading file: {e}")
             sys.exit(1)
         return emails
     
@@ -49,31 +73,41 @@ class SendGridBatchEraser:
             return False
     
     def erase_emails(self, emails: List[str], api_key: str, integration_name: str) -> Dict[str, Any]:
-        """Erase multiple emails using SendGrid SDK."""
+        """Erase multiple emails using Recipients' Data Erasure API."""
+        import requests
+        
         try:
-            sg = SendGridAPIClient(api_key)
-            
+            # Use the Recipients' Data Erasure API endpoint
+            url = "https://api.sendgrid.com/v3/recipients/erasejob"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
             data = {
-                "emails": emails
+                "email_addresses": emails  # Note: different field name for this endpoint
             }
             
-            response = sg.client.suppression.emails.delete(request_body=data)
+            response = requests.post(url, json=data, headers=headers, timeout=30)  # POST, not DELETE
             
-            if response.status_code == 204:
+            # Recipients' Data Erasure API returns 201 for successful job creation
+            if response.status_code in [200, 201, 202, 204]:
                 return {
                     "success": True,
-                    "status_code": 204,
-                    "message": f"Successfully deleted {len(emails)} emails",
+                    "status_code": response.status_code,
+                    "message": f"Successfully initiated erasure for {len(emails)} emails",
                     "emails_processed": emails
                 }
             else:
                 error_message = "Unknown error"
-                if response.body:
+                if response.text:
                     try:
-                        error_data = json.loads(response.body)
-                        error_message = error_data.get("errors", error_data.get("message", "Unknown error"))
+                        error_data = response.json()
+                        if isinstance(error_data, dict):
+                            error_message = error_data.get("errors", error_data.get("message", "Unknown error"))
+                        else:
+                            error_message = str(error_data)
                     except:
-                        error_message = response.body
+                        error_message = response.text
                 
                 return {
                     "success": False,
@@ -82,22 +116,7 @@ class SendGridBatchEraser:
                     "emails_attempted": emails
                 }
                 
-        except HTTPError as e:
-            error_message = "HTTP Error"
-            if hasattr(e, 'body') and e.body:
-                try:
-                    error_data = json.loads(e.body)
-                    error_message = error_data.get("errors", error_data.get("message", str(e)))
-                except:
-                    error_message = str(e)
-            
-            return {
-                "success": False,
-                "status_code": e.status_code if hasattr(e, 'status_code') else None,
-                "error": error_message,
-                "emails_attempted": emails
-            }
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             return {
                 "success": False,
                 "error": f"Request failed: {e}",
@@ -194,13 +213,24 @@ class SendGridBatchEraser:
                 f.write("\n")
             
             f.write(f"## Notes\n\n")
-            f.write(f"- Erasure requests are processed immediately by SendGrid\n")
-            f.write(f"- Deleted emails cannot be recovered\n")
-            f.write(f"- Status 204 indicates successful deletion\n")
+            f.write(f"- Erasure jobs are created via Recipients' Data Erasure API\n")
+            f.write(f"- Uses endpoint: POST /v3/recipients/erasejob\n")
+            f.write(f"- Status 202 indicates job successfully accepted\n")
+            f.write(f"- Status 201 indicates job successfully created\n")
             f.write(f"- Status 403 indicates insufficient API permissions\n")
+            f.write(f"- Deleted emails cannot be recovered\n")
         
         print(f"\n✓ Report saved to: {report_filename}")
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+    else:
+        # Default to CSV file if available
+        if os.path.exists("emails.csv"):
+            filepath = "emails.csv"
+        else:
+            filepath = "emails-26082025.txt"
+    
     eraser = SendGridBatchEraser()
-    eraser.process_batch("emails-26082025.txt")
+    eraser.process_batch(filepath)
