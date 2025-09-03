@@ -89,13 +89,40 @@ class SendGridBatchEraser:
             
             response = requests.post(url, json=data, headers=headers, timeout=30)  # POST, not DELETE
             
+            # Extract request IDs from headers and response body
+            request_ids = {}
+            
+            # Common headers that contain request/trace IDs
+            if 'X-Request-Id' in response.headers:
+                request_ids['x_request_id'] = response.headers['X-Request-Id']
+            if 'X-Message-Id' in response.headers:
+                request_ids['x_message_id'] = response.headers['X-Message-Id']
+            if 'X-Trace-Id' in response.headers:
+                request_ids['x_trace_id'] = response.headers['X-Trace-Id']
+            
+            # Try to get job_id from response body if available
+            if response.text:
+                try:
+                    response_data = response.json()
+                    if isinstance(response_data, dict):
+                        if 'job_id' in response_data:
+                            request_ids['job_id'] = response_data['job_id']
+                        if 'id' in response_data:
+                            request_ids['erasure_job_id'] = response_data['id']
+                        if 'request_id' in response_data:
+                            request_ids['request_id'] = response_data['request_id']
+                except:
+                    pass
+            
             # Recipients' Data Erasure API returns 201 for successful job creation
             if response.status_code in [200, 201, 202, 204]:
                 return {
                     "success": True,
                     "status_code": response.status_code,
                     "message": f"Successfully initiated erasure for {len(emails)} emails",
-                    "emails_processed": emails
+                    "emails_processed": emails,
+                    "request_ids": request_ids,
+                    "response_headers": dict(response.headers)
                 }
             else:
                 error_message = "Unknown error"
@@ -113,7 +140,9 @@ class SendGridBatchEraser:
                     "success": False,
                     "status_code": response.status_code,
                     "error": error_message,
-                    "emails_attempted": emails
+                    "emails_attempted": emails,
+                    "request_ids": request_ids,
+                    "response_headers": dict(response.headers)
                 }
                 
         except requests.exceptions.RequestException as e:
@@ -157,6 +186,12 @@ class SendGridBatchEraser:
                 
                 if result["success"]:
                     print(f"✓ Success: {result['message']}")
+                    # Print request IDs if available
+                    request_ids = result.get('request_ids', {})
+                    if request_ids:
+                        print(f"  Request IDs:")
+                        for id_type, id_value in request_ids.items():
+                            print(f"    - {id_type}: {id_value}")
                 else:
                     print(f"✗ Failed: Status {result.get('status_code', 'N/A')}")
                     print(f"  Error: {result.get('error', 'Unknown error')}")
@@ -172,6 +207,12 @@ class SendGridBatchEraser:
                 
                 if result["success"]:
                     print(f"✓ Success: {result['message']}")
+                    # Print request IDs if available
+                    request_ids = result.get('request_ids', {})
+                    if request_ids:
+                        print(f"  Request IDs:")
+                        for id_type, id_value in request_ids.items():
+                            print(f"    - {id_type}: {id_value}")
                 else:
                     print(f"✗ Failed: Status {result.get('status_code', 'N/A')}")
                     print(f"  Error: {result.get('error', 'Unknown error')}")
@@ -184,12 +225,36 @@ class SendGridBatchEraser:
         self.generate_report(emails, results)
     
     def generate_report(self, emails: List[str], results: Dict[str, Dict[str, Any]]):
-        """Generate markdown report."""
-        report_filename = f"erasure_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        """Generate markdown report and JSON record."""
+        timestamp = datetime.now()
+        report_filename = f"erasure_report_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+        json_filename = f"erasure_record_{timestamp.strftime('%Y%m%d_%H%M%S')}.json"
         
+        # Save JSON record with request details
+        json_record = {
+            "timestamp": timestamp.isoformat(),
+            "emails_count": len(emails),
+            "emails": emails,
+            "results": {}
+        }
+        
+        for integration, result in results.items():
+            json_record["results"][integration] = {
+                "success": result.get("success", False),
+                "status_code": result.get("status_code"),
+                "request_ids": result.get("request_ids", {}),
+                "message": result.get("message") if result.get("success") else result.get("error")
+            }
+        
+        with open(json_filename, 'w') as f:
+            json.dump(json_record, f, indent=2)
+        
+        print(f"✓ JSON record saved to: {json_filename}")
+        
+        # Generate markdown report
         with open(report_filename, 'w') as f:
             f.write(f"# SendGrid Email Erasure Report\n\n")
-            f.write(f"**Generated**: {datetime.now().isoformat()}\n\n")
+            f.write(f"**Generated**: {timestamp.isoformat()}\n\n")
             f.write(f"## Summary\n\n")
             f.write(f"- **Total Emails Processed**: {len(emails)}\n")
             f.write(f"- **Integrations Tested**: {len(results)}\n\n")
@@ -206,10 +271,24 @@ class SendGridBatchEraser:
                     f.write(f"- **Status**: ✓ Success\n")
                     f.write(f"- **Status Code**: {result.get('status_code', 'N/A')}\n")
                     f.write(f"- **Message**: {result.get('message', 'N/A')}\n")
+                    
+                    # Add request IDs if available
+                    request_ids = result.get('request_ids', {})
+                    if request_ids:
+                        f.write(f"\n#### Request IDs\n\n")
+                        for id_type, id_value in request_ids.items():
+                            f.write(f"- **{id_type}**: `{id_value}`\n")
                 else:
                     f.write(f"- **Status**: ✗ Failed\n")
                     f.write(f"- **Status Code**: {result.get('status_code', 'N/A')}\n")
                     f.write(f"- **Error**: {result.get('error', 'Unknown error')}\n")
+                    
+                    # Add request IDs even for failed requests if available
+                    request_ids = result.get('request_ids', {})
+                    if request_ids:
+                        f.write(f"\n#### Request IDs\n\n")
+                        for id_type, id_value in request_ids.items():
+                            f.write(f"- **{id_type}**: `{id_value}`\n")
                 f.write("\n")
             
             f.write(f"## Notes\n\n")
